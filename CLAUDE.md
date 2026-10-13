@@ -68,12 +68,44 @@ Quality bar: native-feeling Shopify admin, fast and accessible storefront widget
 | Tests | Vitest | Service/unit/integration tests. DB tests run against a separate Neon branch (`DATABASE_URL_TEST`). |
 | Monitoring | Sentry (optional, via `SENTRY_DSN`) | |
 
-### Template facts (fill in on Day 1 after inspecting the real project)
-- Template / package versions: _TBD_
-- `@shopify/shopify-app-react-router` version: _TBD_
-- Prisma version and connection-config style: _TBD_
-- Polaris version / how it is loaded: _TBD_
-- Default scopes and webhooks in `shopify.app.toml`: _TBD_
+### Template facts (verified on Day 1, 2026-10-12, from installed `node_modules`)
+- Template: `@shopify/shopify-app-template-react-router`, latest CHANGELOG entry **2026.02.09**. Package manager: **npm**
+  (`package-lock.json`; a `pnpm-workspace.yaml` also ships with the template but is unused). `.npmrc` has `engine-strict=true`.
+- Runtime/tooling: Node engines `>=20.19 <22 || >=22.12` (local: Node 22.18.0, npm 10.8.0, Shopify CLI 4.9.3).
+  React 18.3, React Router **7.18.2** (`@react-router/fs-routes` flat routes via `app/routes.js`), Vite 6.4.4, Vitest 3.2.7 (added Day 1).
+- `@shopify/shopify-app-react-router` **1.2.1** (bundles `@shopify/shopify-api` 13.1.0). `app/shopify.server.js`:
+  `apiVersion: ApiVersion.July26` (2026-07), `distribution: AppStore`, `authPathPrefix: "/auth"`,
+  `future.expiringOfflineAccessTokens: true`, scopes from `process.env.SCOPES`, optional `SHOP_CUSTOM_DOMAIN`. No `afterAuth` hook yet.
+- Sessions: `@shopify/shopify-app-session-storage-prisma` **9.0.1** → `Session` model (includes `refreshToken`, `refreshTokenExpires`).
+  `app/db.server.js`: PrismaClient singleton cached on `global.prismaGlobal` outside production.
+- Prisma **6.19.3** (`prisma-client-js` generator). Connection config style: `url = env("DATABASE_URL")` (pooled) and
+  `directUrl = env("DIRECT_URL")` (direct, used by migrate) in the `datasource` block of `schema.prisma`; no `prisma.config` file.
+  Template shipped SQLite (`file:dev.sqlite`) → switched to Neon PostgreSQL on Day 1; initial migration `init_postgres_session`.
+- Polaris: **Polaris web components** (`<s-page>`, `<s-section>`, `<s-app-nav>`, …) loaded from the CDN
+  (`https://cdn.shopify.com/shopifycloud/polaris.js`) by `AppProvider` from `@shopify/shopify-app-react-router/react`, which also
+  injects App Bridge (`https://cdn.shopify.com/shopifycloud/app-bridge.js`). Types: `@shopify/polaris-types` 1.1.0.
+  `@shopify/app-bridge-react` 4.2.13 provides `useAppBridge()` (toast, intents, …). No `@shopify/polaris` React package.
+- `shopify.app.toml`: scopes now `read_products` (template default was `write_products,write_metaobjects,write_metaobject_definitions`
+  plus a demo product metafield and demo metaobject definition — removed). Webhooks `api_version = "2026-07"` (was 2027-01; aligned Day 2, C2):
+  `app/uninstalled` → `/webhooks/app/uninstalled`, `app/scopes_update` → `/webhooks/app/scopes_update`. No compliance webhooks, no app proxy yet.
+  `automatically_update_urls_on_dev = true`, `include_config_on_deploy = true`.
+- `shopify.web.toml`: `predev = prisma generate`; `dev = prisma migrate deploy && react-router dev` (migrations auto-apply to `DIRECT_URL` on every `shopify app dev`).
+- `extensions/`: empty (`.gitkeep` only). `Dockerfile`: `node:20-alpine`, `npm run docker-start` (= `prisma generate && prisma migrate deploy && react-router-serve`), no ffmpeg.
+- Tooling present: ESLint 8 (`.eslintrc.cjs`), Prettier, `tsconfig.json` (`allowJs`, used for Polaris types/typegen), GraphQL codegen preset (`.graphqlrc.js`), `.mcp.json` with `@shopify/dev-mcp`.
+
+### Template conflicts with this guide (Day 1) — none affect a locked decision
+| # | Conflict | Resolution |
+|---|----------|------------|
+| C1 | Template scopes `write_products,write_metaobjects,write_metaobject_definitions` + demo metafield/metaobject; §8 says `read_products` only. | **Done:** scopes = `read_products`; demo definitions removed from toml; demo `productCreate` action in `app._index.jsx` replaced by a placeholder page. Merchant must approve the scope change on next load. |
+| C2 | Webhook `api_version = "2027-01"` in toml vs `ApiVersion.July26` (2026-07) in `shopify.server.js`; the installed library has no 2026-10/2027-01 enum. | **Done (Day 2, approved):** toml webhook `api_version = "2026-07"`. Bump both together when the library ships a newer stable version. |
+| C3 | `.gitignore` pattern `.env.*` also ignored `.env.example` (§12 expects it committed). | **Done:** added `!.env.example`. |
+| C4 | "JavaScript only / no TypeScript files" vs template `tsconfig.json`, `typecheck` script, `@typescript-eslint`, `@types/*`. | Keep as-is: no `.ts` source files exist; `tsconfig.json` only powers editor types (Polaris web component types, React Router typegen) with `allowJs`. |
+| C5 | `app/shopify.server.js` reads `SHOP_CUSTOM_DOMAIN`, not listed in §12. | Listed as optional in `.env.example`; leave unset. |
+| C6 | §13 `npm run worker` does not exist yet. `npm test` added Day 1 (`vitest run`). `shopify app dev` is also `npm run dev`. | Worker script arrives Day 4. |
+| C7 | Template webhook handlers (`webhooks.app.*.jsx`) call `db.session` directly and have no idempotency; uninstall only deletes sessions. | Session is a template table (allowed). Idempotency + `uninstalledAt` arrive Day 2 / Day 13. |
+| C8 | `shopify.web.toml` runs `prisma migrate deploy` on every `shopify app dev` (against `DIRECT_URL`). | Keep — desired for dev. Never point `DIRECT_URL` at production locally. |
+| C9 | Template `Dockerfile` is a single web image on `node:20-alpine` without ffmpeg; D5 needs web + worker images with system ffmpeg. | Rework on Day 12 (not a change to D5). |
+| C10 | Template home page/`/app/additional` are demo pages with demo nav. | Placeholder kept; real navigation per DESIGN.md on Day 5. |
 
 ---
 
@@ -136,6 +168,10 @@ Server-only code must live in `*.server.js` files.
 - Never use `findUnique({ where: { id } })` on tenant data. Always `findFirst({ where: { id, shopId } })`,
   or a compound unique that includes `shopId`.
 - Only `app/repositories/*.server.js` may query app tables. Every repository function takes `shopId` as its first argument.
+  Documented exceptions: `shop.server.js` (tenant root, looked up by verified `shopDomain`) and the system tables
+  `ProcessedWebhook` / `RateLimit` (not tenant data). The template `Session` table is accessed by the Shopify libraries and template routes.
+- Child tables reference parents through composite `(shopId, id)` foreign keys, so the database rejects cross-shop links.
+- New server modules use explicit `.js` import extensions so they also run under plain Node (seed script, worker).
 - BigInt columns are serialized as strings in JSON responses.
 - Migrations: always `prisma migrate dev --name <descriptive>`; never edit applied migrations; never run
   `migrate reset` or drop tables without asking me first.
@@ -224,7 +260,7 @@ Rules:
 
 ```
 SHOPIFY_API_KEY  SHOPIFY_API_SECRET  SHOPIFY_APP_URL  SCOPES=read_products
-DATABASE_URL  DIRECT_URL  DATABASE_URL_TEST
+DATABASE_URL  DIRECT_URL  DATABASE_URL_TEST  DIRECT_URL_TEST (optional)
 R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET  MEDIA_BASE_URL
 FFMPEG_PATH  FFPROBE_PATH
 ENCRYPTION_KEY  ENCRYPTION_KEY_VERSION  OAUTH_STATE_SECRET
@@ -239,9 +275,12 @@ SENTRY_DSN  NODE_ENV
 ## 13. Commands
 
 ```
-shopify app dev            # run app + tunnel
-npm run worker             # run pg-boss worker locally (separate terminal)
-npm test                   # vitest
+shopify app dev            # run app + tunnel (same as: npm run dev)
+npm run worker             # run pg-boss worker locally (separate terminal) — added Day 4
+npm test                   # vitest run (tests/setup.js redirects Prisma to DATABASE_URL_TEST)
+npm run test:watch         # vitest watch mode
+npm run test:db:migrate    # prisma migrate deploy against the test branch only (DIRECT_URL_TEST, else DATABASE_URL_TEST)
+npm run seed -- --shop <store>.myshopify.com   # idempotent dev seed (refuses production / test branch / unknown shop)
 npx prisma migrate dev     # create/apply migration (dev)
 npx prisma studio          # inspect data
 shopify app deploy         # push config + extensions

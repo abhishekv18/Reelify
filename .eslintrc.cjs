@@ -81,12 +81,17 @@ module.exports = {
       files: [
         ".eslintrc.cjs",
         "vite.config.{js,ts}",
+        "vitest.config.{js,ts}",
+        "tests/**/*.{js,ts}",
+        "scripts/**/*.{js,ts}",
+        "prisma/**/*.{js,ts}",
         ".graphqlrc.{js,ts}",
         "shopify.server.{js,ts}",
         "**/*.server.{js,ts}",
       ],
       env: {
         node: true,
+        es2022: true,
       },
     },
   ],

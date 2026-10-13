@@ -5,30 +5,298 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+// Neon PostgreSQL (Prisma 6 connection-config style).
+// DATABASE_URL = pooled connection (app runtime); DIRECT_URL = direct connection (migrations).
+// See https://neon.com/docs/guides/prisma
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
+// ---------------------------------------------------------------------------
+// Template: Shopify session storage (@shopify/shopify-app-session-storage-prisma)
+// ---------------------------------------------------------------------------
+
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum VideoStatus {
+  UPLOAD_PENDING
+  UPLOADED
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum VideoSource {
+  UPLOAD
+  INSTAGRAM
+}
+
+enum VideoErrorCode {
+  INVALID_FILE
+  TOO_LONG
+  TOO_LARGE
+  TRANSCODE_ERROR
+  SOURCE_UNAVAILABLE
+  COPYRIGHT_RESTRICTED
+}
+
+enum WidgetType {
+  CAROUSEL
+  PRODUCT_VIDEOS
+  BUBBLE
+  STORIES
+}
+
+enum PageType {
+  HOME
+  ALL_PRODUCTS
+  PRODUCT
+  COLLECTION
+}
+
+enum SocialPlatform {
+  INSTAGRAM
+}
+
+enum EventType {
+  IMPRESSION
+  VIEW
+  PRODUCT_CLICK
+  ADD_TO_CART
+}
+
+enum WebhookStatus {
+  PROCESSING
+  COMPLETED
+}
+
+// ---------------------------------------------------------------------------
+// Tenant root
+// ---------------------------------------------------------------------------
+
+model Shop {
+  id            String    @id @default(cuid())
+  shopDomain    String    @unique
+  plan          String    @default("free")
+  settings      Json      @default("{}")
+  onboarding    Json      @default("{}")
+  installedAt   DateTime  @default(now())
+  uninstalledAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  videos         Video[]
+  videoProducts  VideoProduct[]
+  widgets        Widget[]
+  widgetVideos   WidgetVideo[]
+  placements     Placement[]
+  socialAccounts SocialAccount[]
+  oauthStates    OAuthState[]
+  events         Event[]
+}
+
+// ---------------------------------------------------------------------------
+// Tenant data. Every table has shopId (FK → Shop, cascade) and an index starting
+// with shopId. Child tables reference parents through composite (shopId, id)
+// foreign keys so the database itself rejects cross-shop links.
+// ---------------------------------------------------------------------------
+
+model Video {
+  id                String          @id @default(cuid())
+  shopId            String
+  status            VideoStatus     @default(UPLOAD_PENDING)
+  source            VideoSource     @default(UPLOAD)
+  externalId        String?
+  title             String?
+  caption           String?
+  originalKey       String?
+  videoKey          String?
+  previewKey        String?
+  posterKey         String?
+  mimeType          String?
+  sizeBytes         Int?
+  width             Int?
+  height            Int?
+  durationMs        Int?
+  errorCode         VideoErrorCode?
+  errorMessage      String?
+  attempts          Int             @default(0)
+  rightsConfirmedAt DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  shop     Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  products VideoProduct[]
+  widgets  WidgetVideo[]
+
+  @@unique([shopId, id])
+  @@unique([shopId, source, externalId])
+  @@index([shopId, status, createdAt])
+}
+
+model VideoProduct {
+  shopId     String
+  videoId    String
+  productGid String
+  handle     String
+  position   Int    @default(0)
+
+  shop  Shop  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  video Video @relation(fields: [shopId, videoId], references: [shopId, id], onDelete: Cascade)
+
+  @@id([videoId, productGid])
+  @@index([shopId, productGid])
+  @@index([shopId, videoId])
+}
+
+model Widget {
+  id        String     @id @default(cuid())
+  shopId    String
+  name      String
+  type      WidgetType
+  isActive  Boolean    @default(true)
+  settings  Json       @default("{}")
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  shop       Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  videos     WidgetVideo[]
+  placements Placement[]
+
+  @@unique([shopId, id])
+  @@index([shopId, createdAt])
+}
+
+model WidgetVideo {
+  shopId   String
+  widgetId String
+  videoId  String
+  position Int    @default(0)
+
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  widget Widget @relation(fields: [shopId, widgetId], references: [shopId, id], onDelete: Cascade)
+  video  Video  @relation(fields: [shopId, videoId], references: [shopId, id], onDelete: Cascade)
+
+  @@id([widgetId, videoId])
+  @@index([shopId, widgetId])
+  @@index([shopId, videoId])
+}
+
+model Placement {
+  id        String   @id @default(cuid())
+  shopId    String
+  widgetId  String
+  pageType  PageType
+  targetGid String?
+  createdAt DateTime @default(now())
+
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  widget Widget @relation(fields: [shopId, widgetId], references: [shopId, id], onDelete: Cascade)
+
+  @@index([shopId, pageType])
+  @@index([shopId, widgetId])
+}
+
+model SocialAccount {
+  id             String         @id @default(cuid())
+  shopId         String
+  platform       SocialPlatform
+  externalUserId String
+  username       String
+  profilePicUrl  String?
+  accessTokenEnc String
+  keyVersion     Int
+  tokenIssuedAt  DateTime
+  tokenExpiresAt DateTime
+  needsReconnect Boolean        @default(false)
+  lastSyncedAt   DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, platform])
+}
+
+model OAuthState {
+  id        String    @id @default(cuid())
+  nonce     String    @unique
+  shopId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId])
+  @@index([expiresAt])
+}
+
+model Event {
+  id         BigInt    @id @default(autoincrement())
+  shopId     String
+  type       EventType
+  // No FKs to Video/Widget: analytics survive deletes; ids are validated against the shop on write.
+  videoId    String?
+  widgetId   String?
+  productGid String?
+  sessionId  String
+  createdAt  DateTime  @default(now())
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, createdAt])
+  @@index([shopId, type, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// System tables (not tenant data, not linked to Shop)
+// ---------------------------------------------------------------------------
+
+// Webhook idempotency. Survives shop/redact on purpose (a redelivery must stay a no-op).
+model ProcessedWebhook {
+  id          String        @id @default(cuid())
+  webhookId   String        @unique
+  topic       String
+  shopDomain  String
+  status      WebhookStatus @default(PROCESSING)
+  claimToken  String?
+  startedAt   DateTime      @default(now())
+  processedAt DateTime?
+
+  @@index([processedAt])
+}
+
+// Postgres-backed fixed-window rate limiting.
+model RateLimit {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  count       Int      @default(0)
+  windowStart DateTime
+
+  @@index([windowStart])
 }
