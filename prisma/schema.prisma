@@ -133,10 +133,11 @@ model Video {
   externalId        String?
   title             String?
   caption           String?
-  originalKey       String?
-  videoKey          String?
-  previewKey        String?
-  posterKey         String?
+  // Cloudflare Stream (D10). streamUid is globally unique; playback/thumbnail URLs are derived, never stored.
+  streamUid         String?
+  uploadExpiresAt   DateTime?
+  streamState       String?
+  streamSyncedAt    DateTime?
   mimeType          String?
   sizeBytes         Int?
   width             Int?
@@ -155,7 +156,10 @@ model Video {
 
   @@unique([shopId, id])
   @@unique([shopId, source, externalId])
+  @@unique([streamUid])
   @@index([shopId, status, createdAt])
+  // Reconciler scan across shops (expired uploads, stuck processing).
+  @@index([status, updatedAt])
 }
 
 model VideoProduct {

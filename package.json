@@ -21,7 +21,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:db:migrate": "node scripts/migrate-test-db.js",
-    "seed": "node prisma/seed.js"
+    "seed": "node prisma/seed.js",
+    "stream:smoke": "node scripts/stream-smoke.js",
+    "stream:signing-key": "node scripts/stream-create-signing-key.js"
   },
   "type": "module",
   "engines": {

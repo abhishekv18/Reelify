@@ -1,0 +1,17 @@
+{
+  "result": {
+    "uid": "0123456789abcdef0123456789abcdef",
+    "creator": "SHOP_ID",
+    "meta": { "app": "reelify", "shopId": "SHOP_ID", "videoId": "VIDEO_ID", "name": "Fixture" },
+    "readyToStream": true,
+    "requireSignedURLs": true,
+    "status": { "state": "ready", "pctComplete": "100.000000", "errorReasonCode": "", "errorReasonText": "" },
+    "duration": 12.5,
+    "size": 4567890,
+    "input": { "width": 1080, "height": 1920 },
+    "maxDurationSeconds": 180
+  },
+  "success": true,
+  "errors": [],
+  "messages": []
+}

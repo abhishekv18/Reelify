@@ -1,0 +1,9 @@
+{
+  "result": {
+    "uid": "0123456789abcdef0123456789abcdef",
+    "uploadURL": "https://upload.cloudflarestream.com/FIXTURE-ONE-TIME-UPLOAD-TOKEN"
+  },
+  "success": true,
+  "errors": [],
+  "messages": []
+}

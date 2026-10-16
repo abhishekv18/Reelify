@@ -49,16 +49,17 @@ Dashboard · Videos · Widgets · Analytics · Settings · Plans
 
 **Videos**
 - Primary: "Upload videos". Secondary: "Import from Instagram" (only when `FEATURE_INSTAGRAM` is on).
-- Drop zone + upload queue (thumbnail, filename, progress, cancel/retry, per-file errors in plain language).
+- Drop zone + upload queue (thumbnail, filename, progress, cancel/retry, per-file errors in plain language). Files go
+  directly to Cloudflare Stream; after the upload bar completes the card shows "Processing" while Stream encodes.
 - Rights confirmation checkbox: "I own or have permission to use these videos."
 - Library grid of 9:16 cards: poster, duration chip, status badge, source icon, "3 products" tag. Optional list view.
 - Search, filter by status/source, sort. Bulk: delete, add to widget. Cursor pagination.
 - Empty state: illustration + "Upload your first video" + one line on what happens next.
 
 **Video detail**
-- Left: 9:16 player card. Right: details (title, caption), Tagged products (resource picker, reorder, remove,
+- Left: 9:16 player card (Cloudflare Stream embedded player, signed URL). Right: details (title, caption), Tagged products (resource picker, reorder, remove,
   "Product deleted" warning rows), Used in widgets, Metadata.
-- Failed videos show a banner with the reason and next step.
+- Failed videos show a banner with the reason and next step ("Upload again" — Stream cannot re-process a failed upload).
 
 **Widgets**
 - List: name, type, video count, placement summary, active toggle, updated.
@@ -111,7 +112,9 @@ All classes are prefixed `.rl-`. `font-family: inherit` everywhere.
 
 ### Video card
 - `aspect-ratio: 9 / 16`, `object-fit: cover`, radius `--rl-radius`, `--rl-shadow`.
-- Poster always visible first; muted preview fades in (opacity) when playing.
+- Static poster (signed Stream thumbnail) always visible first; an **animated thumbnail** preview fades in (opacity) while the
+  card is ≥ 50 % visible (max 2 at once). If the animated image fails or under reduced motion / Save-Data, the static poster stays.
+  No autoplaying HLS/iframe in cards (cost and performance — D11).
 - Bottom overlay gradient; product chip (thumbnail 28px, price) at the bottom-left; small play icon.
 - Hover (pointer devices only): `transform: translateY(-2px) scale(1.01)`, stronger shadow. Disabled under reduced motion.
 - Focus: visible 2px outline using `--rl-accent` with offset.
@@ -127,16 +130,22 @@ All classes are prefixed `.rl-`. `font-family: inherit` everywhere.
 - Renders nothing (no spacing) when there are no videos.
 
 ### Player
+The MVP uses Cloudflare's embedded Stream player (iframe) inside our own dialog (D11). Our dialog owns the chrome
+(close, prev/next, product sheet, mute toggle via the Player API); the iframe owns video rendering. Constraints and
+workarounds: `docs/STREAM.md` §6.
+
 - Desktop: centered 9:16 player (max height 90vh) over a dark blurred backdrop, prev/next arrows on the sides, close at top-right.
-- Mobile: full-screen, vertical swipe, safe-area insets respected.
-- Top: thin progress bar; mute toggle (remember choice in sessionStorage); tap to pause/play with a brief icon flash.
+- Mobile: full-screen, vertical swipe, safe-area insets respected. Swipes that start on the iframe are not delivered to our page;
+  swipe/next works from our edge/overlay zones and buttons (see `docs/STREAM.md` §6).
+- Top: thin progress bar (from Player API `timeupdate`); mute toggle (remember choice in sessionStorage); tap to pause/play —
+  taps inside the iframe are handled by the Stream player itself, so our icon flash only follows Player API `play`/`pause` events.
 - Bottom sheet: product card (image, title, price, compare-at with sale badge, "Add to cart"). Multiple products → horizontal list of compact cards.
 - Variant sheet: option pills (size, color); unavailable options disabled with strike style; price updates live.
 - Add to cart button states: default → loading (spinner, disabled) → "Added" (check icon, 2s) → default. Errors show inline text, not alerts.
 - Opening animation: scale/opacity from the card (220ms); none under reduced motion.
 - Semantics: `role="dialog"`, `aria-modal="true"`, labelled by the video title; focus trap; ESC closes; focus returns to the opening card;
   body scroll locked without page jump.
-- Video error: show poster + "Couldn't load video. Retry".
+- Video error (Player API `error`, or expired signed URL): show poster + "Couldn't load video. Retry" (retry refetches fresh signed URLs).
 
 ### Motion
 Only `transform` and `opacity` animate. Durations 150–250ms. Everything respects `prefers-reduced-motion: reduce`.
@@ -149,5 +158,8 @@ Only `transform` and `opacity` animate. Durations 150–250ms. Everything respec
 
 ### Performance budget
 - JS ≤ 25 KB gzipped, CSS ≤ 8 KB gzipped.
-- `preload="none"` until near viewport; max 2 concurrent previews; preload only next/previous in player.
+- Cards load only the static poster until near the viewport; max 2 animated previews at once. The Stream player SDK and iframe load
+  only when the player opens. Do not preload neighbouring videos' media (each fetched segment is billed); at most pre-render the
+  next poster.
+- The third-party iframe/SDK weight is reported separately from our 25 KB JS budget.
 - Lighthouse performance score drop ≤ 10 points with the widget installed (Dawn, mobile).

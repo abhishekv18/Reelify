@@ -16,7 +16,7 @@ and add tagged products to the cart without leaving the page.
 Quality bar: native-feeling Shopify admin, fast and accessible storefront widget, eligible for App Store approval.
 
 ### v1 scope (must ship)
-- Manual video upload with full server-side validation and a background processing pipeline
+- Manual video upload with full server-side validation; storage, encoding and delivery by **Cloudflare Stream** (D10)
 - Video library, product tagging, widgets (playlists) with placement rules
 - Storefront: **Video Carousel** app block, **Product Videos** app block, shared **shoppable player** with Add to Cart
 - Basic analytics: impressions, views, product clicks, add-to-carts
@@ -31,23 +31,30 @@ Quality bar: native-feeling Shopify admin, fast and accessible storefront widget
 ### Out of scope for v1 (do not build, do not add schema for)
 - TikTok (official API offers embeds, not video files)
 - Revenue attribution / `orders/*` webhooks / `read_orders` (needs protected customer data review) → v1.1
-- Grid widget, Instagram auto-import, daily analytics rollups, HLS streaming, A/B testing
+- Grid widget, Instagram auto-import, daily analytics rollups, self-hosted HLS/encoding (Stream provides HLS/DASH), A/B testing
+- Resumable (tus) uploads and files > 200 MB (Stream requires tus above 200 MB) → later, only if needed
 
 ---
 
 ## 2. Locked decisions
 
+Superseded/amended rows keep their original text in `docs/DECISIONS.md`.
+
 | ID | Decision |
 |----|----------|
 | D1 | Billing via **Shopify App Pricing** (hosted plan selection page). No Billing API charge creation. |
-| D2 | Background jobs via **pg-boss** on the same PostgreSQL database. No Redis. |
+| D2 | *(amended 2026-10-13 by D10/D12)* Background jobs via **pg-boss** on the same PostgreSQL database, **run inside the web service** — only if Day 4 confirms it runs reliably there (D12). No Redis. No encoding jobs. |
 | D3 | TikTok removed from v1. |
 | D4 | Instagram import behind `FEATURE_INSTAGRAM` (default `false`). App Store submission happens with upload-only unless Meta approval is complete. |
-| D5 | Hosting on **Render**: one Web Service + one Background Worker, Docker images with system ffmpeg. |
+| D5 | *(amended 2026-10-13 by D10)* Hosting on **Render**: one paid, always-on **Web Service**, plain Node Docker image (no ffmpeg, no Background Worker). |
 | D6 | Revenue attribution deferred to v1.1. |
 | D7 | v1 storefront = carousel + product-page videos + player. |
-| D8 | **PENDING** — production media custom domain not confirmed yet. All code reads media URLs from `MEDIA_BASE_URL`; never hard-code a host. r2.dev is allowed for local/dev only. |
-| D9 | Upload limits: MP4 / MOV / WebM, ≤ 200 MB, ≤ 3 minutes. Output: H.264/AAC MP4, max 720p, `+faststart`. |
+| D8 | *(superseded 2026-10-13 by D10)* ~~Production media custom domain / `MEDIA_BASE_URL` / r2.dev~~. Playback is served by Stream from `customer-<CODE>.cloudflarestream.com`. |
+| D9 | *(amended 2026-10-13)* Upload limits: MP4 / MOV / WebM, **≤ 200,000,000 bytes**, **≤ 180 seconds**. Output: **Stream-managed adaptive HLS/DASH** (was: H.264/AAC MP4, 720p, `+faststart`). |
+| D10 | **Cloudflare Stream** stores, encodes and delivers all videos (replaces R2 + ffmpeg). Basic **Direct Creator Uploads** for v1. Every video `requireSignedURLs: true`; playback only through short-lived tokens signed by our server. |
+| D11 | Storefront and admin playback use **Cloudflare's embedded Stream player (iframe)** for the MVP; card previews are **animated thumbnails with a static poster fallback** — never autoplaying HLS in cards. |
+| D12 | Separate Cloudflare account for **production** (Stream allows one webhook URL per account); dev/staging use a non-production account. |
+| D13 | Plan limits cover **video count and stored video minutes** (numbers decided on Day 13). |
 
 ---
 
@@ -60,9 +67,10 @@ Quality bar: native-feeling Shopify admin, fast and accessible storefront widget
 | Admin data | GraphQL Admin API only | No REST Admin API. |
 | Database | PostgreSQL on Neon + Prisma | Use the Prisma version pinned by the template. No Prisma major upgrades. Follow that version's config style for connection URLs. |
 | Sessions | Prisma session storage (template default) | |
-| Jobs | pg-boss | Uses its own `pgboss` schema. Connects with `DIRECT_URL` (unpooled). |
-| Media storage | Cloudflare R2 via `@aws-sdk/client-s3` | Public reads through `MEDIA_BASE_URL`. |
-| Processing | ffmpeg + ffprobe | Local Windows dev: `ffmpeg-static` / `ffprobe-static` via `FFMPEG_PATH` / `FFPROBE_PATH`. Production: system ffmpeg in Docker. |
+| Jobs | pg-boss (inside the web process, D2) | Uses its own `pgboss` schema. Connects with `DIRECT_URL` (unpooled). Only for reconciliation, deletion retries, pruning and scheduled maintenance — never encoding. Risks: `docs/STREAM.md` §7. |
+| Media | **Cloudflare Stream** REST API via `fetch` (`app/services/stream.server.js`) | No SDK. Direct Creator Uploads, video details/list/delete, webhooks, signed playback tokens (RS256 via `node:crypto`). Setup and operations: `docs/STREAM.md`. |
+| Processing | Cloudflare Stream (managed encoding) | No ffmpeg/ffprobe anywhere in the project. |
+| Player | Cloudflare Stream embedded player (iframe) + Player API SDK | Loaded only when the player opens. Limitations: `docs/STREAM.md` §6. |
 | Storefront | Theme App Extension (Liquid + vanilla JS + CSS) | No frameworks in the storefront bundle. |
 | Storefront API | Shopify App Proxy `/apps/reelify/*` | Signature verified with `authenticate.public.appProxy`. |
 | Tests | Vitest | Service/unit/integration tests. DB tests run against a separate Neon branch (`DATABASE_URL_TEST`). |
@@ -101,10 +109,10 @@ Quality bar: native-feeling Shopify admin, fast and accessible storefront widget
 | C3 | `.gitignore` pattern `.env.*` also ignored `.env.example` (§12 expects it committed). | **Done:** added `!.env.example`. |
 | C4 | "JavaScript only / no TypeScript files" vs template `tsconfig.json`, `typecheck` script, `@typescript-eslint`, `@types/*`. | Keep as-is: no `.ts` source files exist; `tsconfig.json` only powers editor types (Polaris web component types, React Router typegen) with `allowJs`. |
 | C5 | `app/shopify.server.js` reads `SHOP_CUSTOM_DOMAIN`, not listed in §12. | Listed as optional in `.env.example`; leave unset. |
-| C6 | §13 `npm run worker` does not exist yet. `npm test` added Day 1 (`vitest run`). `shopify app dev` is also `npm run dev`. | Worker script arrives Day 4. |
+| C6 | §13 `npm run worker` does not exist yet. `npm test` added Day 1 (`vitest run`). `shopify app dev` is also `npm run dev`. | ~~Worker script arrives Day 4.~~ Superseded 2026-10-13: no worker process (D2/D5 amended); `stream:*` scripts arrive Days 3–4. |
 | C7 | Template webhook handlers (`webhooks.app.*.jsx`) call `db.session` directly and have no idempotency; uninstall only deletes sessions. | Session is a template table (allowed). Idempotency + `uninstalledAt` arrive Day 2 / Day 13. |
 | C8 | `shopify.web.toml` runs `prisma migrate deploy` on every `shopify app dev` (against `DIRECT_URL`). | Keep — desired for dev. Never point `DIRECT_URL` at production locally. |
-| C9 | Template `Dockerfile` is a single web image on `node:20-alpine` without ffmpeg; D5 needs web + worker images with system ffmpeg. | Rework on Day 12 (not a change to D5). |
+| C9 | Template `Dockerfile` is a single web image on `node:20-alpine` without ffmpeg; D5 needs web + worker images with system ffmpeg. | Superseded 2026-10-13: D5 amended — the single plain Node web image is what we need; only Day 12 deploy tweaks remain. |
 | C10 | Template home page/`/app/additional` are demo pages with demo nav. | Placeholder kept; real navigation per DESIGN.md on Day 5. |
 
 ---
@@ -112,22 +120,25 @@ Quality bar: native-feeling Shopify admin, fast and accessible storefront widget
 ## 4. Architecture
 
 ```
-Shopify Admin (iframe)          Storefront (theme)
-   │  App Bridge + Polaris         │  app blocks: carousel, product videos
-   ▼                               │  JS: reelify.js  CSS: reelify.css
-React Router app (Render Web) ◄────┘  via App Proxy /apps/reelify/*
-   │   ├─ admin routes (authenticate.admin)
-   │   ├─ proxy routes (authenticate.public.appProxy)
-   │   ├─ webhooks (authenticate.webhook + idempotency)
+Shopify Admin (iframe)                         Storefront (theme)
+   │  App Bridge + Polaris                        │  app blocks: carousel, product videos
+   │  ① POST /app/api/uploads                     │  JS: reelify.js  CSS: reelify.css
+   │  ② file → one-time Stream upload URL ──┐     │  GET /apps/reelify/* (App Proxy)
+   │  ③ POST /app/api/uploads/:id/complete  │     │  signed iframe / thumbnail URLs
+   ▼                                        ▼     ▼
+React Router app (Render Web Service) ◄── Cloudflare Stream (storage, encoding, HLS/DASH, player, thumbnails)
+   │   ├─ admin routes (authenticate.admin)          ▲ REST API (Bearer token, server only)
+   │   ├─ proxy routes (authenticate.public.appProxy)│
+   │   ├─ Shopify webhooks (authenticate.webhook + idempotency)
+   │   ├─ Stream webhook /webhooks/stream (Webhook-Signature HMAC) ──► syncVideoFromStream
+   │   ├─ pg-boss jobs in-process: stream-reconcile, stream-delete, prune (D2)
    │   └─ services/*.server.js  (all DB access is tenant-scoped)
    ▼
-PostgreSQL (Neon) ── Prisma tables + pgboss schema
-   ▲
-   │ pg-boss jobs
-Render Background Worker (worker/index.js)
-   └─ ffprobe validate → ffmpeg transcode → preview → poster → R2
-Cloudflare R2  ──►  MEDIA_BASE_URL (public reads)
+PostgreSQL (Neon) ── Prisma tables (Video.streamUid) + pgboss schema
 ```
+
+Playback and thumbnail URLs are never stored: they are built per request from `Video.streamUid` and a signed token
+(`app/services/playback.server.js`). Details: `docs/STREAM.md`.
 
 Product prices/availability on the storefront are **not** sent by our server. The proxy returns video data and
 product **handles**; the widget fetches `window.Shopify.routes.root + 'products/' + handle + '.js'` so prices and
@@ -141,12 +152,10 @@ currency are correct for the shopper's market.
 app/
   routes/                 admin pages, api actions, proxy routes, webhooks
   components/             admin UI components (Polaris web components)
-  services/               *.server.js — business logic, R2, jobs, plans, crypto, instagram
+  services/               *.server.js — business logic, Stream client, playback tokens, jobs, plans, crypto, instagram
   repositories/           *.server.js — the ONLY place that touches Prisma for app data
-  lib/                    shared pure helpers (validation schemas, constants)
-worker/
-  index.js                pg-boss worker entry
-  jobs/                   one file per job type
+  lib/                    shared pure helpers (validation schemas, constants, Stream status mapping)
+  jobs/                   *.server.js — one file per pg-boss job type, started by the web process (D2)
 extensions/
   reelify-widget/         theme app extension (blocks/, assets/, locales/, snippets/)
 prisma/
@@ -154,7 +163,7 @@ prisma/
 tests/
   unit/, integration/, fixtures/
 docs/
-  TESTING.md, DECISIONS.md
+  TESTING.md, DECISIONS.md, STREAM.md
 ```
 
 Server-only code must live in `*.server.js` files.
@@ -171,7 +180,9 @@ Server-only code must live in `*.server.js` files.
   Documented exceptions: `shop.server.js` (tenant root, looked up by verified `shopDomain`) and the system tables
   `ProcessedWebhook` / `RateLimit` (not tenant data). The template `Session` table is accessed by the Shopify libraries and template routes.
 - Child tables reference parents through composite `(shopId, id)` foreign keys, so the database rejects cross-shop links.
-- New server modules use explicit `.js` import extensions so they also run under plain Node (seed script, worker).
+- New server modules use explicit `.js` import extensions so they also run under plain Node (seed and smoke scripts).
+- `Video.streamUid` is globally unique. Looking a video up by `streamUid` without `shopId` is allowed **only** in the Stream
+  webhook/reconciler path, and must be followed by the ownership check in §7 before anything is changed.
 - BigInt columns are serialized as strings in JSON responses.
 - Migrations: always `prisma migrate dev --name <descriptive>`; never edit applied migrations; never run
   `migrate reset` or drop tables without asking me first.
@@ -188,22 +199,44 @@ Server-only code must live in `*.server.js` files.
 UPLOAD_PENDING → UPLOADED → PROCESSING → READY
                                   └────→ FAILED
 ```
+(R2/ffmpeg version of this section superseded 2026-10-13 by D10; history in `docs/DECISIONS.md`.)
 
-1. **UPLOAD_PENDING** — server validates requested type/size against D9 and plan limits, creates the row,
-   returns a presigned PUT URL with `ContentType` and `ContentLength` signed in. Rights checkbox is required.
-2. **UPLOADED** — client calls `/complete`; server runs `HeadObject` and checks the real size and type; enqueues `process-video`.
-3. **PROCESSING** — worker: ffprobe (must have a video stream, duration ≤ 180s, sane dimensions) → transcode to 720p
-   H.264/AAC MP4 with `+faststart` → 6s muted preview clip → JPEG poster → upload outputs → update row.
-4. **READY** — the only status ever returned to the storefront.
-5. **FAILED** — `errorCode` ∈ `INVALID_FILE | TOO_LONG | TOO_LARGE | TRANSCODE_ERROR | SOURCE_UNAVAILABLE | COPYRIGHT_RESTRICTED`, plus a readable `errorMessage`.
+| Our status | Cloudflare Stream `status.state` | Set by |
+|---|---|---|
+| `UPLOAD_PENDING` | upload URL issued / `pendingupload` | `POST /app/api/uploads` |
+| `UPLOADED` | `downloading`, `queued` | sync (complete hint, webhook, reconciler) |
+| `PROCESSING` | `inprogress` | sync |
+| `READY` | `ready` **and** `readyToStream: true` | sync |
+| `FAILED` | `error`, or our own checks | sync / upload validation |
+
+1. **UPLOAD_PENDING** — server validates type/size against D9, rights confirmation and plan limits, creates the row, then
+   calls Stream `POST /stream/direct_upload` with `maxDurationSeconds: 180`, `expiry` ≈ 30 min, `requireSignedURLs: true`,
+   `creator: shopId`, `meta: { app: "reelify", shopId, videoId }`; stores `streamUid` + `uploadExpiresAt`; returns the
+   one-time `uploadURL` to the authenticated admin only. If the Stream call fails, the row is deleted.
+2. **UPLOADED / PROCESSING** — the browser posts the file (multipart, field `file`) directly to Stream, then calls
+   `/complete` as a hint. The server never trusts the client: it calls `GET /stream/{streamUid}` and runs `syncVideoFromStream`.
+3. **READY** — the only status ever returned to the storefront. Duration, size and dimensions come from the Stream API.
+4. **FAILED** — `errorCode` ∈ `INVALID_FILE | TOO_LONG | TOO_LARGE | TRANSCODE_ERROR | SOURCE_UNAVAILABLE | COPYRIGHT_RESTRICTED`,
+   plus a readable `errorMessage`. Stream mapping: `ERR_NON_VIDEO`, `ERR_MALFORMED_VIDEO`, `ERR_DURATION_TOO_SHORT` → `INVALID_FILE`;
+   `ERR_DURATION_EXCEED_CONSTRAINT` → `TOO_LONG`; `ERR_FETCH_ORIGIN_ERROR` → `SOURCE_UNAVAILABLE`; `ERR_UNKNOWN` → `TRANSCODE_ERROR`
+   ("processing failed"). Size over the limit → `TOO_LARGE`.
 
 Rules:
-- Retries: max 3 with exponential backoff, only for transient errors (network, timeout, 5xx). Validation errors fail immediately.
-- Jobs are idempotent: job key = video id; output keys are deterministic (`shops/{shopId}/videos/{videoId}/...`).
-- A cleanup job deletes `UPLOAD_PENDING` rows older than 24h and their R2 objects.
-- Instagram imports enter the same pipeline at PROCESSING with the Instagram `media_url` as source.
-  If `media_url` is missing (Meta omits it for copyrighted content such as licensed Reel audio) → `COPYRIGHT_RESTRICTED`,
-  and the UI suggests manual upload.
+- **One sync path:** `/complete`, the Stream webhook and the reconciler all call `syncVideoFromStream`. The API response is
+  the source of truth; webhook payloads are only a trigger.
+- **Ownership check before any change:** `details.uid === video.streamUid`, `details.creator === video.shopId`,
+  `details.meta.videoId === video.id`. A mismatch changes nothing and is logged as an error.
+- **Forward-only transitions:** guarded `updateMany` on `{ id, shopId, status ∈ allowedFrom }`; READY and FAILED are terminal,
+  so duplicate or out-of-order notifications cannot move a video backwards.
+- **Re-check D9 after processing:** duration > 180 s or size > 200,000,000 bytes → FAILED and the Stream video is deleted.
+- **Expired uploads:** the reconciler deletes `UPLOAD_PENDING` rows whose `uploadExpiresAt` passed > 10 min ago, and their
+  Stream placeholders (releases the reserved storage minutes).
+- **Retries:** Stream cannot re-encode a failed upload → FAILED uploads offer "Upload again" (new video). Jobs retry only
+  transient errors (network, timeout, 429, 5xx) with exponential backoff.
+- **Deletion:** delete the row by `(id, shopId)`, then enqueue `stream-delete { shopId, uid }`; the job re-checks
+  `creator === shopId` and treats 404 as done.
+- **Instagram imports** (flagged) use Stream "upload via link" (`POST /stream/copy`) with a fresh `media_url` and enter at
+  `UPLOADED`. Missing `media_url` (licensed audio etc.) → `COPYRIGHT_RESTRICTED`, and the UI suggests manual upload.
 
 ---
 
@@ -213,14 +246,26 @@ Rules:
 - **Proxy routes:** `authenticate.public.appProxy(request)`; shop comes from the verified request. Return READY videos only.
 - **Webhooks:** `authenticate.webhook(request)` (HMAC; invalid → 401). Record `X-Shopify-Webhook-Id` in `ProcessedWebhook`
   (unique); duplicates return 200 without reprocessing. Prune records older than 30 days.
-- **Uploads:** allow-list types, signed size/type, `HeadObject` check, ffprobe validation, keys generated server-side only.
+- **Uploads:** allow-list types (D9), size ≤ 200,000,000 bytes, rights confirmation, plan limits and a pending-upload cap,
+  all before a one-time Stream upload URL is created server-side (`maxDurationSeconds: 180`, ~30 min expiry). Never accept a
+  shop id, Stream uid or upload destination from the client.
+- **Cloudflare credentials:** `CLOUDFLARE_STREAM_API_TOKEN`, the signing key and the webhook secret exist only in server
+  env vars and `*.server.js` code. Never send them to the browser or storefront; never log them, one-time upload URLs,
+  signed tokens or signed URLs (log video id, uid and state only).
+- **Stream webhook:** verify `Webhook-Signature` (HMAC-SHA256 of `time + "." + rawBody` with `CLOUDFLARE_STREAM_WEBHOOK_SECRET`,
+  constant-time compare, reject stale timestamps) → 401 on failure; then re-fetch the video from the API and run the
+  ownership-checked sync. Handling is idempotent.
+- **Playback:** every video is created with `requireSignedURLs: true`. Admin and storefront receive short-lived tokens
+  (RS256 JWT signed locally with the Stream signing key, `exp` ≤ 24 h) only for the requesting shop's own videos; the
+  storefront only for READY videos.
 - **Public events endpoint:** schema validation, max 50 events per batch, rate limit per IP + shop (Postgres-backed),
   verify video/widget ids belong to the shop, drop unknown fields.
 - **Secrets:** AES-256-GCM for social tokens, with `ENCRYPTION_KEY_VERSION` stored per row. Never log tokens, codes or URLs containing tokens.
 - **Instagram OAuth:** signed state (shopId + nonce + expiry, HMAC with `OAUTH_STATE_SECRET`), nonce stored in `OAuthState`, single use, 10-minute expiry.
 - **Scopes:** `read_products` only. Ask before adding any scope.
 - **GDPR:** we store no customer PII. Analytics use an anonymous random session id. `customers/data_request` and
-  `customers/redact` are acknowledged and logged; `shop/redact` deletes all shop rows and the R2 prefix `shops/{shopId}/`.
+  `customers/redact` are acknowledged and logged; `shop/redact` deletes all shop rows and enqueues `stream-delete` for every
+  stored `streamUid` plus a sweep of Stream videos with `creator = shopId`.
 
 ---
 
@@ -229,8 +274,12 @@ Rules:
 - Budget: JS ≤ 25 KB gzipped, CSS ≤ 8 KB gzipped. Nothing render-blocking (`defer` scripts).
 - Classes prefixed `.rl-`, CSS custom properties prefixed `--rl-`, `font-family: inherit`.
 - Reserve space with `aspect-ratio` → zero layout shift. Skeletons while loading.
-- Videos: `muted playsinline`, `preload="none"` until near viewport, IntersectionObserver play/pause,
-  max 2 previews playing at once, pause on `visibilitychange`. Always show the poster; autoplay may be blocked (iOS Low Power Mode).
+- Cards (D11): static poster (signed thumbnail URL) first; **animated thumbnail** preview only while ≥ 50 % visible, max 2 at
+  once, never under `prefers-reduced-motion` or Save-Data, with the static poster as fallback on error. **No HLS/iframe in cards.**
+- Player (D11): Cloudflare's embedded Stream player (iframe, signed token in the `src`) inside our own dialog; the Player
+  API SDK is loaded only when the player opens. Pause on `visibilitychange`. Autoplay must be muted and may still be blocked
+  (iOS) — always show the poster and a play control. Known overlay/swipe limitations: `docs/STREAM.md` §6.
+- Cost: every video segment fetched is billed (delivered minutes); do not preload neighbouring videos' media.
 - Cart: `window.Shopify.routes.root + 'cart/add.js'`; request theme sections via the `sections` parameter to refresh
   cart icon/drawer when present; fallback to a "View cart" link. Line item property `_rl_video` (underscore = hidden).
 - Prices formatted with `Intl.NumberFormat` using the shopper's active currency.
@@ -261,14 +310,16 @@ Rules:
 ```
 SHOPIFY_API_KEY  SHOPIFY_API_SECRET  SHOPIFY_APP_URL  SCOPES=read_products
 DATABASE_URL  DIRECT_URL  DATABASE_URL_TEST  DIRECT_URL_TEST (optional)
-R2_ACCOUNT_ID  R2_ACCESS_KEY_ID  R2_SECRET_ACCESS_KEY  R2_BUCKET  MEDIA_BASE_URL
-FFMPEG_PATH  FFPROBE_PATH
+CLOUDFLARE_ACCOUNT_ID  CLOUDFLARE_STREAM_API_TOKEN  CLOUDFLARE_STREAM_CUSTOMER_CODE
+CLOUDFLARE_STREAM_SIGNING_KEY_ID  CLOUDFLARE_STREAM_SIGNING_KEY_JWK  CLOUDFLARE_STREAM_WEBHOOK_SECRET
 ENCRYPTION_KEY  ENCRYPTION_KEY_VERSION  OAUTH_STATE_SECRET
 FEATURE_INSTAGRAM  INSTAGRAM_APP_ID  INSTAGRAM_APP_SECRET  INSTAGRAM_REDIRECT_URI
 SENTRY_DSN  NODE_ENV
 ```
 
 `.env` is git-ignored. `.env.example` lists every variable with no values.
+Removed 2026-10-13 (D10): `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `MEDIA_BASE_URL`,
+`FFMPEG_PATH`, `FFPROBE_PATH` (`.env.example` is updated on Day 3). Each environment has its own Cloudflare values (D12).
 
 ---
 
@@ -276,7 +327,9 @@ SENTRY_DSN  NODE_ENV
 
 ```
 shopify app dev            # run app + tunnel (same as: npm run dev)
-npm run worker             # run pg-boss worker locally (separate terminal) — added Day 4
+npm run stream:smoke -- --shop <store>.myshopify.com --file <video>   # real-account smoke test (Day 3; never in npm test)
+npm run stream:webhook -- set --url <public-url>/webhooks/stream     # register the account's single webhook URL (Day 4)
+npm run stream:signing-key -- --write-env   # create the Stream signing key once per account; saves it to .env, never prints it
 npm test                   # vitest run (tests/setup.js redirects Prisma to DATABASE_URL_TEST)
 npm run test:watch         # vitest watch mode
 npm run test:db:migrate    # prisma migrate deploy against the test branch only (DIRECT_URL_TEST, else DATABASE_URL_TEST)
@@ -287,7 +340,8 @@ shopify app deploy         # push config + extensions
 shopify app webhook trigger --topic <topic> --address <url>
 ```
 
-(Adjust on Day 1 if the template's scripts differ.)
+(Adjust on Day 1 if the template's scripts differ.) The `stream:*` scripts are added on Days 3–4; there is no separate
+worker process (D2/D5 amended) — pg-boss starts with the web server.
 
 ---
 
